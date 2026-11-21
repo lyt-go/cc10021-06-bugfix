@@ -4,6 +4,9 @@ domain_chain: 质量事件 (dq_incident)
   └─ 关联 → 趋势分析 (dq_trend)
   └─ 聚合 → 评分卡 (dq_scorecard)
   └─ 清洗 → 告警通知 (dq_alert_channel)
+
+基线偏离回写的事件都带校验凭证，事件复核面板按凭证读取当时的基线比较明细，
+不在复核时重新按当前基线算一遍。
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.baseline_registry import baseline_checks
 from app.store import store
 
 
@@ -20,7 +24,7 @@ class DqIncidentService(BaseModuleService):
     MODULE = "dq_incident"
     ENTITY = "质量事件"
     OPERATION_TERM = "写入"
-    LIST_FIELDS = ["事件编号", "关联规则", "触发时间", "偏离程度", "影响行数", "严重级别", "处理状态", "处理人"]
+    LIST_FIELDS = ["事件编号", "关联规则", "触发时间", "偏离程度", "影响行数", "严重级别", "处理状态", "处理人", "校验凭证"]
     REQUIRED_FIELDS = ["事件编号", "关联规则", "触发时间"]
     STATUS_ORDER = ["待确认", "调查中", "已修复", "已关闭"]
     ACTION_RULES = {"确认事件": "待确认", "开始调查": "调查中", "标记修复": "已修复", "关闭事件": "已关闭"}
@@ -116,6 +120,40 @@ class DqIncidentService(BaseModuleService):
 
         return entry
 
+    def review_incident(self, incident_ref: str) -> dict[str, Any] | None:
+        """事件复核面板：按校验凭证（或事件编号）读取基线比较明细。
+
+        复核读的是当时冻结的基线版本，而不是复核时刻的当前基线，
+        因此有效结论、争议明细和报告来源都能随着事件一起还原。
+        """
+        check = baseline_checks.by_credential_or_incident(str(incident_ref or "").strip())
+        if not check:
+            return None
+        return {
+            "复核对象": incident_ref,
+            "校验凭证": check.get("校验凭证"),
+            "质量事件编号": check.get("质量事件编号"),
+            "事件核对": self._incident_by_id(check.get("质量事件编号")),
+            "目标表名": check.get("目标表名"),
+            "基线指标": check.get("基线指标"),
+            "当前读数": check.get("当前读数"),
+            "校验结果": check.get("校验结果"),
+            "使用基线版本": check.get("基线版本"),
+            "有效结论": check.get("有效结论"),
+            "基线快照": check.get("基线快照"),
+            "基线明细": check.get("基线明细"),
+            "争议明细": check.get("争议明细"),
+            "报告来源": check.get("报告来源"),
+        }
+
+    def _incident_by_id(self, incident_id: str | None) -> dict[str, Any] | None:
+        if not incident_id:
+            return None
+        for row in store.rows(self.MODULE):
+            if row.get("事件编号") == incident_id:
+                return row
+        return None
+
     def analyze_incident_trend(self, table_name: str) -> dict[str, Any]:
         """分析质量事件趋势并计算改善评分。
 
@@ -126,7 +164,16 @@ class DqIncidentService(BaseModuleService):
         related = [i for i in all_incidents if table_name in str(i.get("关联规则", ""))]
 
         if not related:
-            return {"目标表名": table_name, "状态": "无历史事件", "趋势": "平稳"}
+            return {
+                "目标表名": table_name,
+                "状态": "无历史事件",
+                "历史事件总数": 0,
+                "已修复": 0,
+                "修复率": "0.0%",
+                "趋势方向": "平稳",
+                "趋势": "平稳",
+                "建议": "保持监控",
+            }
 
         resolved = sum(1 for i in related if i.get("status") in ("已修复", "已关闭"))
         resolution_rate = resolved / len(related) * 100 if related else 0
@@ -147,5 +194,5 @@ class DqIncidentService(BaseModuleService):
         snapshot["operation"] = "写入"
         snapshot["desc"] = "写入质量事件记录并关联告警与趋势分析"
         snapshot["artifact"] = "质量事件数据集"
-        snapshot["artifact_desc"] = "含趋势和告警关联的质量事件数据集"
+        snapshot["artifact_desc"] = "含趋势、告警关联和校验凭证的质量事件数据集"
         return snapshot

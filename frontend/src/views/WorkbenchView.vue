@@ -28,8 +28,9 @@
       </span>
     </p>
 
-    <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
+    <BaselineTools :module-key="meta.key" />
+
+    <form class="filter-bar" @submit.prevent="reload">      <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
         <input v-model="filters[field]" :data-testid="`filter-${field}`" :placeholder="`按${field}检索`" />
       </label>
@@ -103,6 +104,7 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
+import BaselineTools from '@/components/BaselineTools.vue'
 import type { EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
